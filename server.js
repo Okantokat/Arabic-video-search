@@ -291,7 +291,7 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Arabic Video Search running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Arabic Video Search running on port ${PORT}`);
   console.log(`Supadata API key: ${process.env.SUPADATA_API_KEY ? 'configured' : 'missing'}`);
 });
