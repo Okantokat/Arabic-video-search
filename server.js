@@ -77,6 +77,82 @@ function searchTranscript(transcript, query) {
   return matches;
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function transcriptFromPayload(payload) {
+  const candidate =
+    (Array.isArray(payload?.content) && payload) ||
+    (Array.isArray(payload?.data?.content) && payload.data) ||
+    (Array.isArray(payload?.result?.content) && payload.result) ||
+    null;
+
+  if (!candidate) return null;
+
+  return {
+    transcript: candidate.content
+      .map((item) => ({
+        text: String(item?.text || '').trim(),
+        offset: Number(item?.offset || 0),
+        duration: Number(item?.duration || 0),
+      }))
+      .filter((item) => item.text),
+    language: candidate.lang || payload?.lang || 'ar',
+  };
+}
+
+async function pollSupadataJob(jobId, apiKey) {
+  const jobUrl = `https://api.supadata.ai/v1/transcript/${encodeURIComponent(jobId)}`;
+
+  for (let attempt = 0; attempt < 45; attempt += 1) {
+    await sleep(1000);
+
+    const response = await fetch(jobUrl, {
+      headers: {
+        'x-api-key': apiKey,
+        'accept': 'application/json',
+      },
+    });
+
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const message =
+        payload?.message ||
+        payload?.error ||
+        `Transkript sonucu alınamadı (HTTP ${response.status}).`;
+      throw new Error(message);
+    }
+
+    const ready = transcriptFromPayload(payload);
+    if (ready?.transcript?.length) {
+      return ready;
+    }
+
+    const status = String(payload?.status || '').toLowerCase();
+
+    if (status === 'failed') {
+      throw new Error(
+        payload?.error?.message ||
+        payload?.error ||
+        'Transkript hazırlanırken Supadata işlemi başarısız oldu.'
+      );
+    }
+
+    if (!status || !['queued', 'active', 'processing', 'pending'].includes(status)) {
+      if (attempt >= 4) {
+        throw new Error('Supadata transkript sonucunu beklenen biçimde döndürmedi.');
+      }
+    }
+  }
+
+  throw new Error('Transkript hazırlanması 45 saniyeden uzun sürdü. Biraz sonra tekrar deneyin.');
+}
+
 async function fetchTranscriptWithSupadata(videoId) {
   const apiKey = process.env.SUPADATA_API_KEY;
 
@@ -114,30 +190,20 @@ async function fetchTranscriptWithSupadata(videoId) {
     throw new Error(message);
   }
 
-  if (!Array.isArray(payload?.content)) {
-    if (payload?.jobId) {
-      throw new Error('Bu video için transkript hazırlanıyor. Birkaç saniye sonra tekrar deneyin.');
-    }
+  let ready = transcriptFromPayload(payload);
 
-    throw new Error('Supadata zaman kodlu transkript döndürmedi.');
+  if (!ready && payload?.jobId) {
+    ready = await pollSupadataJob(payload.jobId, apiKey);
   }
 
-  const transcript = payload.content
-    .map((item) => ({
-      text: String(item?.text || '').trim(),
-      offset: Number(item?.offset || 0),
-      duration: Number(item?.duration || 0),
-    }))
-    .filter((item) => item.text);
-
-  if (!transcript.length) {
-    throw new Error('Videoda Arapça transkript bulunamadı.');
+  if (!ready?.transcript?.length) {
+    throw new Error('Supadata zaman kodlu Arapça transkript döndürmedi.');
   }
 
   return {
-    transcript,
-    language: payload.lang || 'ar',
-    source: 'supadata',
+    transcript: ready.transcript,
+    language: ready.language || 'ar',
+    source: payload?.jobId ? 'supadata-async' : 'supadata',
   };
 }
 
