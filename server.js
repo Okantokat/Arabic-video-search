@@ -2,208 +2,151 @@ import express from 'express';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const RAPIDAPI_HOST =
+  process.env.RAPIDAPI_HOST || 'filmot-tube-metadata-archive.p.rapidapi.com';
 
 app.use(express.static('public'));
 
-function normalizeArabic(value = '') {
-  return value
+function stripArabicMarks(value = '') {
+  return String(value)
     .normalize('NFKC')
     .replace(/[\u064B-\u065F\u0670\u06D6-\u06ED]/g, '')
     .replace(/\u0640/g, '')
-    .replace(/[أإآٱ]/g, 'ا')
-    .replace(/ى/g, 'ي')
-    .replace(/ؤ/g, 'و')
-    .replace(/ئ/g, 'ي')
-    .replace(/[“”"'.،؛؟!?()[\]{}:;,_/\\-]/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
+    .trim();
 }
 
-function extractVideoId(input = '') {
-  const value = input.trim();
-  if (/^[A-Za-z0-9_-]{11}$/.test(value)) return value;
+function makeFilmotQuery(input, exact) {
+  const cleaned = stripArabicMarks(input);
+  if (!cleaned) return '';
 
-  try {
-    const url = new URL(value);
+  if (!exact) return cleaned;
 
-    if (url.hostname === 'youtu.be') {
-      return url.pathname.split('/').filter(Boolean)[0] || null;
-    }
-
-    if (url.hostname.includes('youtube.com')) {
-      if (url.pathname.startsWith('/shorts/')) {
-        return url.pathname.split('/')[2] || null;
-      }
-      if (url.pathname.startsWith('/embed/')) {
-        return url.pathname.split('/')[2] || null;
-      }
-      return url.searchParams.get('v');
-    }
-  } catch {
-    return null;
+  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+    return cleaned;
   }
 
-  return null;
+  return `"${cleaned.replace(/"/g, '')}"`;
 }
 
-function textOverlapRatio(a, b) {
-  const aWords = new Set(normalizeArabic(a).split(' ').filter(Boolean));
-  const bWords = new Set(normalizeArabic(b).split(' ').filter(Boolean));
-
-  if (!aWords.size || !bWords.size) return 0;
-
-  let shared = 0;
-  for (const word of aWords) {
-    if (bWords.has(word)) shared += 1;
-  }
-
-  return shared / Math.min(aWords.size, bWords.size);
+function secondsValue(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
-function searchTranscript(transcript, query) {
-  const normalizedQuery = normalizeArabic(query);
-  const rawMatches = [];
+function normalizeHit(hit, query) {
+  if (!hit || typeof hit !== 'object') return null;
 
-  for (let i = 0; i < transcript.length; i += 1) {
-    for (let windowSize = 1; windowSize <= 4 && i + windowSize <= transcript.length; windowSize += 1) {
-      const slice = transcript.slice(i, i + windowSize);
-      const joinedText = slice.map((item) => item.text).join(' ');
+  const start = secondsValue(
+    hit.start ?? hit.seconds ?? hit.offset ?? hit.starttime ?? 0
+  );
 
-      if (!normalizeArabic(joinedText).includes(normalizedQuery)) continue;
+  const token = String(hit.token || '').trim();
+  const lines = Array.isArray(hit.lines) ? hit.lines : [];
 
-      const startMs = Number(slice[0].offset || 0);
+  let text = '';
 
-      rawMatches.push({
-        text: joinedText,
-        startMs,
-        seconds: Math.floor(startMs / 1000),
-        durationMs: slice.reduce((sum, item) => sum + Number(item.duration || 0), 0),
-      });
-      break;
+  if (lines.length) {
+    const normalizedQuery = stripArabicMarks(query);
+    const preferred =
+      lines.find((line) =>
+        stripArabicMarks(line?.text || '').includes(normalizedQuery)
+      ) || lines[0];
+
+    text = String(preferred?.text || '').trim();
+
+    if (preferred && preferred.start != null) {
+      return {
+        seconds: secondsValue(preferred.start),
+        text,
+      };
     }
   }
 
-  const matches = [];
-
-  for (const match of rawMatches) {
-    const previous = matches[matches.length - 1];
-
-    if (previous) {
-      const closeInTime = match.startMs - previous.startMs <= 15000;
-      const previousText = normalizeArabic(previous.text);
-      const currentText = normalizeArabic(match.text);
-      const nearDuplicate =
-        previousText.includes(currentText) ||
-        currentText.includes(previousText) ||
-        textOverlapRatio(previous.text, match.text) >= 0.6;
-
-      if (closeInTime && nearDuplicate) {
-        continue;
-      }
-    }
-
-    matches.push(match);
+  if (!text) {
+    text = [
+      String(hit.ctx_before || '').trim(),
+      token,
+      String(hit.ctx_after || '').trim(),
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
-  return matches;
+  if (!text) return null;
+
+  return { seconds: start, text };
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function normalizeVideo(video, query, subtitleType) {
+  if (!video || typeof video !== 'object') return null;
 
-function transcriptFromPayload(payload) {
-  const candidate =
-    (Array.isArray(payload?.content) && payload) ||
-    (Array.isArray(payload?.data?.content) && payload.data) ||
-    (Array.isArray(payload?.result?.content) && payload.result) ||
-    null;
+  const videoId = String(video.id || video.videoid || '').trim();
+  if (!videoId) return null;
 
-  if (!candidate) return null;
+  const rawHits = Array.isArray(video.hits) ? video.hits : [];
+  const seen = new Set();
+  const hits = [];
+
+  for (const rawHit of rawHits) {
+    const hit = normalizeHit(rawHit, query);
+    if (!hit) continue;
+
+    const key = `${Math.floor(hit.seconds)}|${stripArabicMarks(hit.text).slice(0, 100)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    hits.push(hit);
+
+    if (hits.length >= 5) break;
+  }
 
   return {
-    transcript: candidate.content
-      .map((item) => ({
-        text: String(item?.text || '').trim(),
-        offset: Number(item?.offset || 0),
-        duration: Number(item?.duration || 0),
-      }))
-      .filter((item) => item.text),
-    language: candidate.lang || payload?.lang || 'ar',
+    videoId,
+    title: String(video.title || 'Başlıksız video'),
+    channel: String(
+      video.channelname || video.channeltitle || video.channel || 'Bilinmeyen kanal'
+    ),
+    views: Number(video.viewcount || 0) || 0,
+    duration: Number(video.duration || 0) || 0,
+    uploadDate: String(video.uploaddate || ''),
+    language: String(video.lang || 'ar'),
+    subtitleType,
+    hits,
   };
 }
 
-async function pollSupadataJob(jobId, apiKey) {
-  const jobUrl = `https://api.supadata.ai/v1/transcript/${encodeURIComponent(jobId)}`;
-
-  for (let attempt = 0; attempt < 45; attempt += 1) {
-    await sleep(1000);
-
-    const response = await fetch(jobUrl, {
-      headers: {
-        'x-api-key': apiKey,
-        'accept': 'application/json',
-      },
-    });
-
-    let payload;
-    try {
-      payload = await response.json();
-    } catch {
-      payload = null;
-    }
-
-    if (!response.ok) {
-      const message =
-        payload?.message ||
-        payload?.error ||
-        `Transkript sonucu alınamadı (HTTP ${response.status}).`;
-      throw new Error(message);
-    }
-
-    const ready = transcriptFromPayload(payload);
-    if (ready?.transcript?.length) {
-      return ready;
-    }
-
-    const status = String(payload?.status || '').toLowerCase();
-
-    if (status === 'failed') {
-      throw new Error(
-        payload?.error?.message ||
-        payload?.error ||
-        'Transkript hazırlanırken Supadata işlemi başarısız oldu.'
-      );
-    }
-
-    if (!status || !['queued', 'active', 'processing', 'pending'].includes(status)) {
-      if (attempt >= 4) {
-        throw new Error('Supadata transkript sonucunu beklenen biçimde döndürmedi.');
-      }
-    }
-  }
-
-  throw new Error('Transkript hazırlanması 45 saniyeden uzun sürdü. Biraz sonra tekrar deneyin.');
-}
-
-async function fetchTranscriptWithSupadata(videoId) {
-  const apiKey = process.env.SUPADATA_API_KEY;
+async function callFilmot(query, page, manual) {
+  const apiKey = process.env.RAPIDAPI_KEY;
 
   if (!apiKey) {
     const error = new Error(
-      'Ücretsiz Supadata API anahtarı ayarlı değil. Codespaces terminalinde SUPADATA_API_KEY değişkenini ekleyin.'
+      'Filmot RapidAPI anahtarı ayarlı değil. RAPIDAPI_KEY ortam değişkenini ekleyin.'
     );
-    error.code = 'MISSING_SUPADATA_KEY';
+    error.code = 'MISSING_RAPIDAPI_KEY';
     throw error;
   }
 
-  const endpoint = new URL('https://api.supadata.ai/v1/transcript');
-  endpoint.searchParams.set('url', `https://www.youtube.com/watch?v=${videoId}`);
+  const endpoint = new URL(
+    `https://${RAPIDAPI_HOST}/getsearchsubtitles`
+  );
+
+  endpoint.searchParams.set('query', query);
   endpoint.searchParams.set('lang', 'ar');
+  endpoint.searchParams.set('page', String(page));
+  endpoint.searchParams.set('hitFormat', '1');
+  endpoint.searchParams.set('maxQueryTime', '10000');
+
+  if (manual) {
+    endpoint.searchParams.set('searchManualSubs', '1');
+  }
 
   const response = await fetch(endpoint, {
     headers: {
-      'x-api-key': apiKey,
-      'accept': 'application/json',
+      'x-rapidapi-key': apiKey,
+      'x-rapidapi-host': RAPIDAPI_HOST,
+      accept: 'application/json',
     },
   });
 
@@ -215,70 +158,140 @@ async function fetchTranscriptWithSupadata(videoId) {
   }
 
   if (!response.ok) {
-    const message =
+    const detail =
       payload?.message ||
       payload?.error ||
-      `Supadata isteği başarısız oldu (HTTP ${response.status}).`;
-    throw new Error(message);
+      `Filmot API isteği başarısız oldu (HTTP ${response.status}).`;
+    const error = new Error(String(detail));
+    error.status = response.status;
+    throw error;
   }
 
-  let ready = transcriptFromPayload(payload);
-
-  if (!ready && payload?.jobId) {
-    ready = await pollSupadataJob(payload.jobId, apiKey);
+  if (payload?.error) {
+    throw new Error(String(payload.error));
   }
 
-  if (!ready?.transcript?.length) {
-    throw new Error('Supadata zaman kodlu Arapça transkript döndürmedi.');
-  }
+  const videos = Array.isArray(payload?.result)
+    ? payload.result
+    : Array.isArray(payload?.videos)
+      ? payload.videos
+      : Array.isArray(payload?.items)
+        ? payload.items
+        : [];
 
   return {
-    transcript: ready.transcript,
-    language: ready.language || 'ar',
-    source: payload?.jobId ? 'supadata-async' : 'supadata',
+    videos,
+    total: Number(payload?.totalresultcount || videos.length) || videos.length,
   };
 }
 
+function mergeVideoResults(groups, query) {
+  const map = new Map();
+
+  for (const group of groups) {
+    if (!group?.videos) continue;
+
+    for (const rawVideo of group.videos) {
+      const item = normalizeVideo(rawVideo, query, group.subtitleType);
+      if (!item) continue;
+
+      const existing = map.get(item.videoId);
+
+      if (!existing) {
+        map.set(item.videoId, item);
+        continue;
+      }
+
+      const hitKeys = new Set(
+        existing.hits.map(
+          (hit) =>
+            `${Math.floor(hit.seconds)}|${stripArabicMarks(hit.text).slice(0, 100)}`
+        )
+      );
+
+      for (const hit of item.hits) {
+        const key = `${Math.floor(hit.seconds)}|${stripArabicMarks(hit.text).slice(0, 100)}`;
+        if (!hitKeys.has(key) && existing.hits.length < 5) {
+          existing.hits.push(hit);
+          hitKeys.add(key);
+        }
+      }
+
+      if (existing.subtitleType !== item.subtitleType) {
+        existing.subtitleType = 'automatic+manual';
+      }
+    }
+  }
+
+  return [...map.values()]
+    .filter((video) => video.hits.length > 0)
+    .slice(0, 20);
+}
+
 app.get('/api/search', async (req, res) => {
-  const video = String(req.query.video || '').trim();
-  const query = String(req.query.q || '').trim();
+  const input = String(req.query.q || '').trim();
+  const exact = String(req.query.exact ?? '1') !== '0';
+  const source = String(req.query.source || 'all');
+  const page = Math.max(1, Math.min(50, Number(req.query.page || 1) || 1));
 
-  if (!video || !query) {
-    return res.status(400).json({
-      error: 'Video bağlantısı ve Arapça arama ifadesi gerekli.',
-    });
+  if (!input) {
+    return res.status(400).json({ error: 'Aranacak Arapça kelime veya kalıbı yazın.' });
   }
 
-  const videoId = extractVideoId(video);
-
-  if (!videoId) {
-    return res.status(400).json({
-      error: 'Geçerli bir YouTube bağlantısı veya video kimliği girin.',
-    });
-  }
+  const query = makeFilmotQuery(input, exact);
 
   try {
-    const result = await fetchTranscriptWithSupadata(videoId);
-    const matches = searchTranscript(result.transcript, query);
+    const groups = [];
+    const warnings = [];
+
+    if (source === 'all' || source === 'auto') {
+      try {
+        const auto = await callFilmot(query, page, false);
+        groups.push({ ...auto, subtitleType: 'automatic' });
+      } catch (error) {
+        warnings.push(`Otomatik altyazı araması: ${error.message}`);
+      }
+    }
+
+    if (source === 'all' || source === 'manual') {
+      try {
+        const manual = await callFilmot(query, page, true);
+        groups.push({ ...manual, subtitleType: 'manual' });
+      } catch (error) {
+        warnings.push(`Manuel altyazı araması: ${error.message}`);
+      }
+    }
+
+    if (!groups.length) {
+      const message = warnings.join(' ') || 'Filmot araması başarısız oldu.';
+      const missingKey = message.includes('RAPIDAPI_KEY');
+      return res.status(missingKey ? 503 : 502).json({
+        error: missingKey
+          ? 'Bir defalık Filmot API anahtarı kurulumu gerekiyor.'
+          : 'YouTube altyazı araması yapılamadı.',
+        detail: message,
+        code: missingKey ? 'MISSING_RAPIDAPI_KEY' : 'FILMOT_SEARCH_FAILED',
+      });
+    }
+
+    const videos = mergeVideoResults(groups, input);
+    const totalIndexedMatches = groups.reduce((sum, group) => sum + group.total, 0);
 
     return res.json({
-      videoId,
-      query,
-      transcriptLanguage: result.language,
-      transcriptSource: result.source,
-      count: matches.length,
-      results: matches,
+      query: input,
+      filmotQuery: query,
+      page,
+      source,
+      exact,
+      count: videos.length,
+      totalIndexedMatches,
+      videos,
+      warnings,
     });
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    const setupRequired = error?.code === 'MISSING_SUPADATA_KEY';
-
-    return res.status(setupRequired ? 503 : 502).json({
-      error: setupRequired
-        ? 'Bir defalık ücretsiz API anahtarı kurulumu gerekiyor.'
-        : 'Arapça altyazı alınamadı.',
-      detail,
-      code: error?.code || null,
+    return res.status(500).json({
+      error: 'Arama sırasında beklenmeyen bir hata oluştu.',
+      detail: error instanceof Error ? error.message : String(error),
     });
   }
 });
@@ -286,12 +299,15 @@ app.get('/api/search', async (req, res) => {
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
-    transcriptProvider: 'supadata',
-    apiKeyConfigured: Boolean(process.env.SUPADATA_API_KEY),
+    searchProvider: 'filmot-rapidapi',
+    apiKeyConfigured: Boolean(process.env.RAPIDAPI_KEY),
+    host: RAPIDAPI_HOST,
   });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Arabic Video Search running on port ${PORT}`);
-  console.log(`Supadata API key: ${process.env.SUPADATA_API_KEY ? 'configured' : 'missing'}`);
+  console.log(
+    `Filmot RapidAPI key: ${process.env.RAPIDAPI_KEY ? 'configured' : 'missing'}`
+  );
 });
