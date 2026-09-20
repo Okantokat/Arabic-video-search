@@ -1,9 +1,4 @@
 import express from 'express';
-import { createRequire } from 'node:module';
-import { fetchTranscript } from 'youtube-transcript';
-
-const require = createRequire(import.meta.url);
-const youtubedl = require('youtube-dl-exec');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -66,7 +61,6 @@ function searchTranscript(transcript, query) {
 
       const startMs = Number(slice[0].offset || 0);
       const key = Math.round(startMs);
-
       if (seen.has(key)) break;
 
       seen.add(key);
@@ -83,199 +77,68 @@ function searchTranscript(transcript, query) {
   return matches;
 }
 
-function parseJson3Captions(payload) {
-  if (!payload || !Array.isArray(payload.events)) return [];
+async function fetchTranscriptWithSupadata(videoId) {
+  const apiKey = process.env.SUPADATA_API_KEY;
 
-  return payload.events
-    .map((event) => {
-      const text = (event.segs || [])
-        .map((segment) => segment.utf8 || '')
-        .join('')
-        .replace(/\n+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      return {
-        text,
-        offset: Number(event.tStartMs || 0),
-        duration: Number(event.dDurationMs || 0),
-      };
-    })
-    .filter((item) => item.text);
-}
-
-function parseVttTime(value) {
-  const parts = value.trim().split(':').map(Number);
-
-  if (parts.length === 3) {
-    return ((parts[0] * 3600) + (parts[1] * 60) + parts[2]) * 1000;
-  }
-
-  if (parts.length === 2) {
-    return ((parts[0] * 60) + parts[1]) * 1000;
-  }
-
-  return 0;
-}
-
-function parseVttCaptions(vtt) {
-  const blocks = String(vtt)
-    .replace(/\r/g, '')
-    .split(/\n\n+/);
-
-  const entries = [];
-
-  for (const block of blocks) {
-    const lines = block.split('\n').map((line) => line.trim()).filter(Boolean);
-    const timeIndex = lines.findIndex((line) => line.includes('-->'));
-
-    if (timeIndex === -1) continue;
-
-    const [startRaw, endRaw] = lines[timeIndex].split('-->');
-    const start = parseVttTime(startRaw);
-    const end = parseVttTime(endRaw.split(' ')[0]);
-    const text = lines
-      .slice(timeIndex + 1)
-      .join(' ')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    if (text) {
-      entries.push({
-        text,
-        offset: start,
-        duration: Math.max(0, end - start),
-      });
-    }
-  }
-
-  return entries;
-}
-
-function findArabicTrack(info) {
-  const sources = [
-    { kind: 'manual', tracks: info?.subtitles || {} },
-    { kind: 'automatic', tracks: info?.automatic_captions || {} },
-  ];
-
-  for (const source of sources) {
-    const languages = Object.keys(source.tracks);
-    const arabicLanguage =
-      languages.find((lang) => lang.toLowerCase() === 'ar') ||
-      languages.find((lang) => /^ar[-_]/i.test(lang));
-
-    if (!arabicLanguage) continue;
-
-    const formats = source.tracks[arabicLanguage] || [];
-    const preferred =
-      formats.find((format) => format.ext === 'json3') ||
-      formats.find((format) => format.ext === 'vtt') ||
-      formats[0];
-
-    if (preferred?.url) {
-      return {
-        ...preferred,
-        language: arabicLanguage,
-        source: source.kind,
-      };
-    }
-  }
-
-  return null;
-}
-
-async function fetchTranscriptWithYtDlp(videoId) {
-  const url = `https://www.youtube.com/watch?v=${videoId}`;
-
-  const info = await youtubedl(url, {
-    dumpSingleJson: true,
-    skipDownload: true,
-    noWarnings: true,
-    noCheckCertificates: true,
-  }, {
-    timeout: 45000,
-  });
-
-  const track = findArabicTrack(info);
-
-  if (!track) {
-    const manual = Object.keys(info?.subtitles || {});
-    const automatic = Object.keys(info?.automatic_captions || {});
-    const available = [...new Set([...manual, ...automatic])];
-
+  if (!apiKey) {
     const error = new Error(
-      available.length
-        ? `Arapça altyazı bulunamadı. Mevcut diller: ${available.slice(0, 12).join(', ')}`
-        : 'Bu videoda kullanılabilir altyazı bulunamadı.'
+      'Ücretsiz Supadata API anahtarı ayarlı değil. Codespaces terminalinde SUPADATA_API_KEY değişkenini ekleyin.'
     );
-    error.code = 'NO_ARABIC_CAPTIONS';
+    error.code = 'MISSING_SUPADATA_KEY';
     throw error;
   }
 
-  const response = await fetch(track.url, {
+  const endpoint = new URL('https://api.supadata.ai/v1/transcript');
+  endpoint.searchParams.set('url', `https://www.youtube.com/watch?v=${videoId}`);
+  endpoint.searchParams.set('lang', 'ar');
+
+  const response = await fetch(endpoint, {
     headers: {
-      'user-agent': 'Mozilla/5.0',
-      'accept-language': 'ar,en;q=0.8',
+      'x-api-key': apiKey,
+      'accept': 'application/json',
     },
   });
 
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
   if (!response.ok) {
-    throw new Error(`Altyazı dosyası alınamadı (HTTP ${response.status}).`);
+    const message =
+      payload?.message ||
+      payload?.error ||
+      `Supadata isteği başarısız oldu (HTTP ${response.status}).`;
+    throw new Error(message);
   }
 
-  let transcript;
+  if (!Array.isArray(payload?.content)) {
+    if (payload?.jobId) {
+      throw new Error('Bu video için transkript hazırlanıyor. Birkaç saniye sonra tekrar deneyin.');
+    }
 
-  if (track.ext === 'json3') {
-    transcript = parseJson3Captions(await response.json());
-  } else {
-    transcript = parseVttCaptions(await response.text());
+    throw new Error('Supadata zaman kodlu transkript döndürmedi.');
   }
+
+  const transcript = payload.content
+    .map((item) => ({
+      text: String(item?.text || '').trim(),
+      offset: Number(item?.offset || 0),
+      duration: Number(item?.duration || 0),
+    }))
+    .filter((item) => item.text);
 
   if (!transcript.length) {
-    throw new Error('Altyazı bulundu ancak metin çözümlenemedi.');
+    throw new Error('Videoda Arapça transkript bulunamadı.');
   }
 
   return {
     transcript,
-    language: track.language,
-    source: `yt-dlp-${track.source}`,
+    language: payload.lang || 'ar',
+    source: 'supadata',
   };
-}
-
-async function getArabicTranscript(videoId) {
-  let firstError = null;
-
-  try {
-    const transcript = await fetchTranscript(videoId, { lang: 'ar' });
-
-    if (transcript?.length) {
-      return {
-        transcript,
-        language: 'ar',
-        source: 'youtube-transcript',
-      };
-    }
-  } catch (error) {
-    firstError = error;
-  }
-
-  try {
-    return await fetchTranscriptWithYtDlp(videoId);
-  } catch (fallbackError) {
-    const error = new Error(
-      fallbackError instanceof Error
-        ? fallbackError.message
-        : 'Altyazı alınamadı.'
-    );
-
-    error.firstError = firstError instanceof Error ? firstError.message : null;
-    throw error;
-  }
 }
 
 app.get('/api/search', async (req, res) => {
@@ -297,7 +160,7 @@ app.get('/api/search', async (req, res) => {
   }
 
   try {
-    const result = await getArabicTranscript(videoId);
+    const result = await fetchTranscriptWithSupadata(videoId);
     const matches = searchTranscript(result.transcript, query);
 
     return res.json({
@@ -310,18 +173,27 @@ app.get('/api/search', async (req, res) => {
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    const setupRequired = error?.code === 'MISSING_SUPADATA_KEY';
 
-    return res.status(502).json({
-      error: 'Arapça altyazı alınamadı.',
+    return res.status(setupRequired ? 503 : 502).json({
+      error: setupRequired
+        ? 'Bir defalık ücretsiz API anahtarı kurulumu gerekiyor.'
+        : 'Arapça altyazı alınamadı.',
       detail,
+      code: error?.code || null,
     });
   }
 });
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    transcriptProvider: 'supadata',
+    apiKeyConfigured: Boolean(process.env.SUPADATA_API_KEY),
+  });
 });
 
 app.listen(PORT, () => {
   console.log(`Arabic Video Search running on http://localhost:${PORT}`);
+  console.log(`Supadata API key: ${process.env.SUPADATA_API_KEY ? 'configured' : 'missing'}`);
 });
