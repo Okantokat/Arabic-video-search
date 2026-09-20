@@ -11,11 +11,10 @@
   <main class="page">
     <section class="card hero">
       <span class="badge">Fasih Arapça çalışma aracı</span>
-      <h1>YouTube videolarında Arapça kalıp ara</h1>
+      <h1>YouTube altyazılarında Arapça kalıp ara</h1>
       <p class="lead">
-        Video bağlantısı yapıştırmadan, Filmot'un indekslediği YouTube
-        altyazıları içinde kelime veya kalıp ara. Sonuca dokununca video
-        doğrudan ilgili saniyeden açılır.
+        Video bağlantısı yapıştırmadan Arapça kelime veya kalıp ara.
+        Önce Filmot indeksindeki videolar bulunur; istediğiniz sonuç için zaman kodu tek dokunuşla çıkarılır.
       </p>
 
       <form id="searchForm" class="search-form">
@@ -33,28 +32,16 @@
           />
         </label>
 
-        <div class="options">
-          <label class="check-row">
-            <input id="exactInput" type="checkbox" checked />
-            <span>Tam kalıp olarak ara</span>
-          </label>
-
-          <label class="select-label">
-            Altyazı
-            <select id="sourceInput">
-              <option value="all" selected>Otomatik + manuel</option>
-              <option value="auto">Yalnızca otomatik</option>
-              <option value="manual">Yalnızca manuel</option>
-            </select>
-          </label>
-        </div>
+        <label class="check-row">
+          <input id="exactInput" type="checkbox" checked />
+          <span>Tam kalıp olarak ara</span>
+        </label>
 
         <button id="searchButton" type="submit">YouTube altyazılarında ara</button>
       </form>
 
       <p class="hint">
-        Arapça harekeler aramadan önce kaldırılır. Arama, Filmot'un indekslediği
-        YouTube transkriptlerini kapsar.
+        Arama Filmot'un indekslediği YouTube altyazılarında yapılır. Zaman kodu yalnızca seçtiğiniz videoda çözülür; böylece ücretsiz kota gereksiz yere harcanmaz.
       </p>
     </section>
 
