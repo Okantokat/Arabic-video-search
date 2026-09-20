@@ -47,10 +47,23 @@ function extractVideoId(input = '') {
   return null;
 }
 
+function textOverlapRatio(a, b) {
+  const aWords = new Set(normalizeArabic(a).split(' ').filter(Boolean));
+  const bWords = new Set(normalizeArabic(b).split(' ').filter(Boolean));
+
+  if (!aWords.size || !bWords.size) return 0;
+
+  let shared = 0;
+  for (const word of aWords) {
+    if (bWords.has(word)) shared += 1;
+  }
+
+  return shared / Math.min(aWords.size, bWords.size);
+}
+
 function searchTranscript(transcript, query) {
   const normalizedQuery = normalizeArabic(query);
-  const seen = new Set();
-  const matches = [];
+  const rawMatches = [];
 
   for (let i = 0; i < transcript.length; i += 1) {
     for (let windowSize = 1; windowSize <= 4 && i + windowSize <= transcript.length; windowSize += 1) {
@@ -60,11 +73,8 @@ function searchTranscript(transcript, query) {
       if (!normalizeArabic(joinedText).includes(normalizedQuery)) continue;
 
       const startMs = Number(slice[0].offset || 0);
-      const key = Math.round(startMs);
-      if (seen.has(key)) break;
 
-      seen.add(key);
-      matches.push({
+      rawMatches.push({
         text: joinedText,
         startMs,
         seconds: Math.floor(startMs / 1000),
@@ -72,6 +82,28 @@ function searchTranscript(transcript, query) {
       });
       break;
     }
+  }
+
+  const matches = [];
+
+  for (const match of rawMatches) {
+    const previous = matches[matches.length - 1];
+
+    if (previous) {
+      const closeInTime = match.startMs - previous.startMs <= 15000;
+      const previousText = normalizeArabic(previous.text);
+      const currentText = normalizeArabic(match.text);
+      const nearDuplicate =
+        previousText.includes(currentText) ||
+        currentText.includes(previousText) ||
+        textOverlapRatio(previous.text, match.text) >= 0.6;
+
+      if (closeInTime && nearDuplicate) {
+        continue;
+      }
+    }
+
+    matches.push(match);
   }
 
   return matches;
