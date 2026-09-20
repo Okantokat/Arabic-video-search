@@ -1,41 +1,28 @@
 # Arabic-video-search
 
-Filmot'un YouTube altyazı indeksinde Arapça kelime ve kalıp arayan mobil uyumlu web uygulaması.
+Video bağlantısı yapıştırmadan YouTube altyazılarında Arapça kelime/kalıp aramak için web uygulaması.
 
-## Ne yapar?
+## Mimari
 
-- Kullanıcı video bağlantısı girmez.
-- Arapça kelime veya kalıp yazar.
-- Filmot API üzerinden Arapça YouTube altyazılarında arama yapılır.
-- Otomatik ve manuel altyazı sonuçları birleştirilebilir.
-- Video başlığı, kanal, ilgili altyazı cümlesi ve zaman kodu gösterilir.
-- Zaman koduna dokununca YouTube doğrudan o saniyeden açılır.
+1. Filmot'un indekslediği YouTube altyazıları Parse'ın Filmot wrapper API'si üzerinden aranır.
+2. Sonuçlarda video başlığı, kanal ve eşleşen altyazı parçası gösterilir.
+3. Kullanıcı bir sonuçta "Zaman kodunu bul" dediğinde yalnızca o video Supadata üzerinden çözülür.
+4. Böylece Supadata kotası her aramada onlarca video için tüketilmez.
 
-> Not: Arama bütün YouTube'un canlı bir taraması değildir. Filmot'un indekslediği YouTube altyazı/transkript arşivini tarar.
-
-## Gereksinim
-
-Filmot Tube Metadata Archive API için RapidAPI anahtarı gerekir.
-
-Ortam değişkenleri:
+## Ortam değişkenleri
 
 ```bash
-RAPIDAPI_KEY=rapidapi_anahtariniz
-RAPIDAPI_HOST=filmot-tube-metadata-archive.p.rapidapi.com
+PARSE_API_KEY='parse_anahtariniz'
+SUPADATA_API_KEY='supadata_anahtariniz'
 ```
-
-`RAPIDAPI_HOST` verilmezse yukarıdaki varsayılan host kullanılır.
 
 ## Çalıştırma
 
 ```bash
 npm install
-export RAPIDAPI_KEY='BURAYA_RAPIDAPI_ANAHTARI'
 npm start
 ```
 
-Uygulama varsayılan olarak port 3000'de açılır.
+## Not
 
-## Güvenlik
-
-API anahtarını kaynak koda, GitHub deposuna veya tarayıcı tarafındaki JavaScript dosyalarına yazmayın. Anahtar yalnızca sunucuda ortam değişkeni olarak tutulmalıdır.
+Arama bütün YouTube'u canlı taramaz; Filmot'un indekslediği YouTube altyazı arşivinde arar. API anahtarlarını kaynak koda veya GitHub'a yazmayın.
