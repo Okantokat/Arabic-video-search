@@ -4,32 +4,21 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#111827" />
-  <title>Arapça Video Arama</title>
+  <title>Arapça YouTube Kalıp Arama</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <main class="page">
     <section class="card hero">
       <span class="badge">Fasih Arapça çalışma aracı</span>
-      <h1>Arapça kelimeyi videoda bul</h1>
+      <h1>YouTube videolarında Arapça kalıp ara</h1>
       <p class="lead">
-        YouTube bağlantısını ve aradığınız Arapça kelime ya da kalıbı girin.
-        Eşleşen konuşma parçalarını zaman kodlarıyla görün.
+        Video bağlantısı yapıştırmadan, Filmot'un indekslediği YouTube
+        altyazıları içinde kelime veya kalıp ara. Sonuca dokununca video
+        doğrudan ilgili saniyeden açılır.
       </p>
 
       <form id="searchForm" class="search-form">
-        <label>
-          YouTube videosu
-          <input
-            id="videoInput"
-            name="video"
-            type="url"
-            inputmode="url"
-            placeholder="https://www.youtube.com/watch?v=..."
-            required
-          />
-        </label>
-
         <label>
           Arapça kelime / kalıp
           <input
@@ -39,15 +28,33 @@
             dir="rtl"
             lang="ar"
             placeholder="مِنْ هَذَا المُنْطَلَقِ"
+            autocomplete="off"
             required
           />
         </label>
 
-        <button id="searchButton" type="submit">Videoda ara</button>
+        <div class="options">
+          <label class="check-row">
+            <input id="exactInput" type="checkbox" checked />
+            <span>Tam kalıp olarak ara</span>
+          </label>
+
+          <label class="select-label">
+            Altyazı
+            <select id="sourceInput">
+              <option value="all" selected>Otomatik + manuel</option>
+              <option value="auto">Yalnızca otomatik</option>
+              <option value="manual">Yalnızca manuel</option>
+            </select>
+          </label>
+        </div>
+
+        <button id="searchButton" type="submit">YouTube altyazılarında ara</button>
       </form>
 
       <p class="hint">
-        Harekeli ve harekesiz yazımlar eşleştirilmeye çalışılır.
+        Arapça harekeler aramadan önce kaldırılır. Arama, Filmot'un indekslediği
+        YouTube transkriptlerini kapsar.
       </p>
     </section>
 
